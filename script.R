@@ -11,12 +11,18 @@ library(fpp3)
 library(directlabels)
 library(patchwork)
 library(ggrepel)
+library(GGally)
+library(fixest)
+library(ggResidpanel)
+library(nlme)
+library(frontier)
+library(patchwork)
 theme_set(theme_bw(base_size = 21))
 options(scipen = 999)
 
 
-# ========================================
-# ANÁLISIS PIB POTENCIAL Y PIB REAL
+
+# =========== ANÁLISIS PIB POTENCIAL Y PIB REAL =================
 
 # todo esto son puras limpiezas
 pibbc <- readxl::read_excel("PIB chained.xlsx", skip = 1)
@@ -113,6 +119,7 @@ scales::dollar(10339757)
 ts.rate <- ts(pibbcpc$deltapc[2:34], start = 1990, end = 2022)
 quiebre <- cpt.mean(ts.rate*100, penalty = "BIC", method = "BinSeg")
 
+1990+24
 
 # asignar los quiebres, se obtienen del objeto "quiebre", solo basta
 # sumar los números que da al año base, y se tiene el año de quiebre
@@ -160,8 +167,7 @@ ggplot() +
        caption = "Quiebre estructural obtenido por segmentación binaria, HP es filtro Hodrick-Prescott λ=100.\n@sientifiko1")
 
 
-# =======================================
-# COMPARACIÓN INTERNACIONAL
+# ========== COMPARACIÓN INTERNACIONAL ===================
 
 # leer el archivo
 bm <- readxl::read_excel("API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_6299184.xls") %>% 
@@ -507,3 +513,660 @@ bm %>%
   labs(title = "Catch up con Estados Unidos",
        subtitle = "Ratio de PIB pc con respecto al PIB pc de Estados Unidos")
 
+
+
+# ======== CHINA ====================
+
+bm <- readxl::read_excel("API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_6299184.xls") %>% 
+  gather("año", "pibpc", 3:35) %>% 
+  mutate(año = as.numeric(año))
+
+# CORRELACIÓN SUPER CHINA
+bm %>% 
+  filter(name %in% c("Chile", "Uruguay", "Argentina",
+                     "Bolivia", "Peru", "Paraguay", "China"),
+         año < 2012) %>% 
+  select(año, name, pibpc) %>% 
+  spread(name, pibpc) %>% 
+  select(2:ncol(.)) %>% 
+  ggpairs(diag = list(continuous = "blankDiag")) +
+  theme(strip.text.x = element_text(size = 9),
+        strip.text.y = element_text(size = 9),
+        axis.text.x = element_text(angle = 90, vjust = .5, size = 7),
+        axis.text.y = element_text(size = 7))
+
+# correlación china bajo
+bm %>% 
+  filter(name %in% c("Chile", "Uruguay", "Argentina",
+                     "Bolivia", "Peru", "Paraguay", "China"),
+         año > 2014) %>% 
+  select(año, name, pibpc) %>% 
+  spread(name, pibpc) %>% 
+  select(2:ncol(.)) %>% 
+  ggpairs(diag = list(continuous = "blankDiag")) +
+  theme(strip.text.x = element_text(size = 9),
+        strip.text.y = element_text(size = 9),
+        axis.text.x = element_text(angle = 90, vjust = .5, size = 7),
+        axis.text.y = element_text(size = 7))
+
+  labs(title = "Asociación PIB China y Conosur",
+       subtitle = "Desde 2014 en adelante")
+
+
+# Pibs de Chile y China
+bm %>% 
+  filter(name %in% c("Chile", "China")) %>% 
+  group_by(name) %>% 
+  mutate(rate = log(pibpc/lag(pibpc))) %>% 
+  ggplot() +
+  aes(año, rate, color = name) +
+  guides(color = "none") +
+  geom_line(linewidth = 1.2) +
+  geom_dl(aes(label = name), 
+          method = list(dl.trans(x = x+2.5, y = y+2.7), 
+                        "first.points", cex = 1.5)) +
+  scale_x_continuous(breaks = seq(1990, 2022, 1),
+                     expand = c(0,0)) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5)) 
+
+
+# ROL DE IMPORTACIONES
+chinam <- readxl::read_excel("importaciones.xls", skip = 2) %>% 
+  filter(`Country Code` == "CHN") %>% 
+  gather("anio","imports",5:ncol(.)) %>% 
+  mutate(anio = as.numeric(anio)) %>% 
+  filter(anio >= 1990) %>% 
+  select(anio, imports)
+
+# asociación importaciones y crecimiento
+bm %>% 
+  filter(name %in% c("Chile")) %>% 
+  group_by(name) %>% 
+  mutate(rate = log(pibpc/lag(pibpc))) %>% 
+  left_join(
+    chinam, by = c("año" = "anio")
+  ) %>% 
+  mutate(ratem = log(imports/lag(imports)),
+         id = row_number()) %>% 
+  mutate(lagratem = lag(ratem),
+         lagpib = lag(rate))-> tempimpocl
+
+tempimpocl %>% 
+  ggplot() +
+  aes(x = año) +
+  # guides(color = "none") +
+  geom_line(aes(y=rate, color = "PIB Chile"),linewidth = 1.2) +
+  geom_line(aes(y=ratem, color = "Impo China"),linewidth = 1.2) +
+  # geom_dl(aes(label = name), 
+  #         method = list(dl.trans(x = x+1.7, y = y+2.7), 
+  #                       "first.points", cex = .9)) +
+  scale_x_continuous(breaks = seq(1990, 2022, 1),
+                     expand = c(0,0)) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5),
+        legend.position = c(.8, .8),
+        legend.title = element_blank()) 
+
+# MODELO Y DIAGNÓSTICO
+model1 <- feols(rate ~ ratem, data = tempimpocl)
+model2 <- feols(rate ~ ratem + lagratem, data = tempimpocl)
+model3 <- feols(rate ~ ratem + lagratem + lagpib, data = tempimpocl)
+
+model1lm <- lm(rate ~ ratem, data = tempimpocl)
+model2lm <- lm(rate ~ ratem + lagratem, data = tempimpocl)
+model3lm <- lm(rate ~ ratem + lagratem + lagpib, data = tempimpocl)
+
+etable(model1, model2, model3, vcov = vcovHAC)
+
+resid_panel(model1lm)
+resid_panel(model2lm)
+
+ggPacf(model1$residuals)
+ggAcf(model1$residuals)
+ggPacf(model2$residuals)
+ggAcf(model2$residuals)
+
+ggplot() +
+  aes(x= 1991:2022) +
+  geom_line(aes(y = tempimpocl$rate[2:33], color = "Observado")) +
+  geom_line(aes(y = model1$fitted.values, color = "Predicho"))
+
+
+# probando la misma asociación antes de 1990
+chinam2 <- readxl::read_excel("importaciones.xls", skip = 2) %>% 
+  filter(`Country Code` == "CHN") %>% 
+  gather("anio","imports",5:ncol(.)) %>% 
+  mutate(anio = as.numeric(anio)) %>% 
+  select(anio, imports)
+
+datpib <- readxl::read_excel("pwt1001.xlsx", sheet = 3) %>% 
+  filter(country == "Chile") %>% 
+  select(4, 5, 7) %>% 
+  mutate(pibpc = rgdpe/pop) %>% 
+  mutate(rate = log(pibpc/lag(pibpc)))
+
+datpib %>% 
+  left_join(chinam2, 
+            by = c("year"="anio")) %>% 
+  filter(year >= 1960, year <= 1990) %>% 
+  mutate(rate = log(pibpc/lag(pibpc)),
+         ratem = log(imports/lag(imports))) %>% 
+  mutate(lagratem = lag(ratem),
+         lagpib = lag(rate))-> temp2
+
+model1alt <- feols(rate ~ ratem, data = temp2)
+model2alt <- feols(rate ~ ratem + lagratem, data = temp2)
+model3alt <- feols(rate ~ ratem + lagratem + lagpib, data = temp2)
+
+etable(model1alt, model2alt, model3alt, vcov = vcovHAC)
+
+
+# ================ PRODUCTIVIDAD ===============
+
+pwtdat <- readxl::read_excel("pwt1001.xlsx", sheet = 3)
+pwtdat$prod <- (pwtdat$rgdpe/pwtdat$avh)/pwtdat$emp
+# pwtdat$prod <- (pwtdat$rgdpe/pwtdat$emp)/pwtdat$avh
+# pwtdat$prod <- pwtdat$rgdpe/(pwtdat$emp*pwtdat$avh)
+pwtdat$region <- countrycode(pwtdat$countrycode,
+                             origin = "iso3c",
+                             destination = "region23")
+
+# productividad global
+pwtdat %>% 
+  filter(!(country == "Chile")) %>% 
+  group_by(year) %>% 
+  summarise(q2 = quantile(prod, .25,na.rm = T),
+            q3 = quantile(prod, .5,na.rm = T),
+            q4 = quantile(prod, .75,na.rm = T)) %>% 
+  left_join(
+    pwtdat %>% 
+      filter(country == "Chile") %>% 
+      select(year, prodchile = prod),
+    by = "year"
+  ) %>% 
+  ggplot() +
+  aes(x= year) +
+  geom_line(aes(y = q3), linewidth = 1.2, color = "black") +
+  geom_ribbon(aes(ymax = q4, ymin = q2),alpha = .3, color = "grey") +
+  geom_line(aes(y = prodchile), color = "red", alpha = .3, linewidth = 1.2) +
+  scale_x_continuous(breaks = seq(1990, 2019, 1),
+                     limits = c(1990, 2019),
+                     expand = c(0,0)) +
+  scale_y_continuous(labels = scales::dollar) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = c(.8, .85),
+        axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5),
+        plot.caption = element_text(size = 15)) +
+  labs(title = "Tendencia productividad global",
+       subtitle = "PIB por hora media de trabajo anual por trabajador",
+       caption = "Línea negra es productividad mediana global, bandas representan percentiles .25 y .75 respectivamente, en rojo productividad de Chile\n@sientifiko1")
+
+# productividad de américa
+pwtdat %>% 
+    filter(region%in%c("South America", "Central America", "Caribbean"),
+           !(country == "Chile")) %>% 
+    group_by(year) %>% 
+    summarise(q2 = quantile(prod, .25,na.rm = T),
+              q3 = quantile(prod, .5,na.rm = T),
+              q4 = quantile(prod, .75,na.rm = T)) %>% 
+    left_join(
+      pwtdat %>% 
+        filter(country == "Chile") %>% 
+        select(year, prodchile = prod),
+      by = "year"
+    ) %>% 
+  ggplot() +
+    aes(x= year) +
+    geom_line(aes(y = q3), linewidth = 1.2, color = "black") +
+    geom_ribbon(aes(ymax = q4, ymin = q2),alpha = .3, color = "grey") +
+    geom_line(aes(y = prodchile), color = "red", alpha = .3, linewidth = 1.2) +
+    scale_x_continuous(breaks = seq(1990, 2019, 1),
+                       limits = c(1990, 2019),
+                       expand = c(0,0)) +
+    scale_y_continuous(labels = scales::dollar) +
+    theme(axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          legend.title = element_blank(),
+          legend.position = c(.8, .85),
+          axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5),
+          plot.caption = element_text(size = 15)) +
+    labs(title = "Tendencia productividad LATAM y el Caribe",
+         subtitle = "PIB por hora media de trabajo anual por trabajador",
+         caption = "Línea negra es productividad mediana latina, bandas representan percentiles .25 y .75 respectivamente, en rojo productividad de Chile\n@sientifiko1")
+  
+
+
+ # productividad a los más competitivos
+ pwtdat %>% 
+   filter(country %in% c("Chile", "Panama", "Puerto Rico",
+                         "Uruguay", "Trinidad and Tobago")) %>% 
+   select(year, country, countrycode, prod) %>% 
+    ggplot() +
+    aes(year, prod, color = country) +
+    guides(color = "none") +
+    geom_line(linewidth = 1.2) +
+    geom_dl(aes(label = countrycode), 
+             method = list(dl.trans(x = x-1, y = y), 
+                           "last.points", cex = .9), 
+             color = "black") +
+    scale_x_continuous(breaks = seq(1990, 2019, 1),
+                       limits = c(1990, 2019),
+                       expand = c(0,0)) +
+    scale_y_continuous(labels = scales::dollar) +
+    theme(axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          legend.title = element_blank(),
+          legend.position = c(.8, .85),
+          axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5),
+          plot.caption = element_text(size = 15)) +
+    labs(title = "Productividad de los latinos más competitivos",
+         subtitle = "PIB por hora media de trabajo anual por trabajador",
+         caption = "@sientifiko1")
+
+
+# output por trabajador
+pwtdat %>% 
+      filter(country %in% c("Chile", "Panama", "Puerto Rico",
+                            "Uruguay", "Trinidad and Tobago")) %>% 
+    ggplot() +
+      aes(year, rgdpe/emp, color = country) +
+      guides(color = "none") +
+      geom_line(linewidth = 1.2) +
+      geom_dl(aes(label = countrycode), 
+              method = list(dl.trans(x = x-1, y = y), 
+                            "last.points", cex = .9), 
+              color = "black") +
+      scale_x_continuous(breaks = seq(1990, 2019, 1),
+                         limits = c(1990, 2019),
+                         expand = c(0,0)) +
+      scale_y_continuous(labels = scales::dollar) +
+      theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank(),
+            legend.title = element_blank(),
+            legend.position = c(.8, .85),
+            axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5),
+            plot.caption = element_text(size = 15)) +
+      labs(title = "Productividad de los latinos más competitivos",
+           subtitle = "PIB por trabajador",
+           caption = "@sientifiko1")
+    
+countrycode("Costa Rica",
+            "country.name",
+            "iso3c")
+
+  
+# cierre brecha productividad con respecto a USA 
+pwtdat %>% 
+  select(countrycode, country, year, prod) %>% 
+  filter(countrycode %in% c("CHL", "URY", "MYS", "SGP", "KOR", 
+                            "CHN", "CRI")) %>% 
+  left_join(
+    pwtdat %>% 
+      filter(countrycode == "USA") %>% 
+      select(year, produsa = prod)
+  ) %>% 
+  mutate(frontera = prod/produsa) %>% 
+  ggplot() +
+  aes(year, frontera, color = countrycode) +
+  guides(color = "none") +
+  geom_line(linewidth = 1.2)+
+  geom_dl(aes(label = countrycode), 
+          method = list(dl.trans(x = x-1, y = y), 
+                        "last.points", cex = .9), 
+          color = "black") +
+  scale_x_continuous(breaks = seq(1990, 2019, 1),
+                     expand = c(0,0),
+                     limits = c(1990, 2019)) +
+  theme(axis.title.x = element_blank(),
+        legend.title = element_blank(),
+        legend.position = c(.8, .85),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5)) +
+  labs(title = "Catch up con Estados Unidos",
+       subtitle = "Ratio de productividad con respecto a EEUU")
+  
+
+
+
+# =============== LA PANDEMIA ==============
+
+
+# leer el archivo
+bm <- readxl::read_excel("API_NY.GDP.PCAP.PP.KD_DS2_en_excel_v2_6299184.xls") %>% 
+  gather("año", "pibpc", 3:35) %>% 
+  mutate(año = as.numeric(año))
+
+# asignar una región
+bm$region <- countrycode(bm$iso,
+                         origin = "iso3c",
+                         destination = "region23")
+
+# filtro remover no países
+bm <- bm %>% 
+  filter(!is.na(region))
+
+# DESDE AQUÍ LAS GRÁFICAS
+
+# Tendencia del PIB global por pandemia
+bm %>% 
+  group_by(año) %>% 
+  summarise(q2 = quantile(pibpc, .25,na.rm = T),
+            q3 = quantile(pibpc, .5,na.rm = T),
+            q4 = quantile(pibpc, .75,na.rm = T)) %>% 
+  left_join(
+    bm %>% 
+      filter(iso == "CHL") %>% 
+      select(año, pibchile = pibpc),
+    by = "año"
+  ) %>% 
+  ggplot() +
+  aes(x= año) +
+  geom_line(aes(y = q3), linewidth = 1.2, color = "black") +
+  geom_ribbon(aes(ymax = q4, ymin = q2),alpha = .3, color = "grey") +
+  geom_line(aes(y = pibchile), color = "red", alpha = .3, linewidth = 1.2) +
+  scale_x_continuous(breaks = seq(1990, 2022, 1),
+                     expand = c(0,0), 
+                     limits = c(2015, 2022)) +
+  scale_y_continuous(labels = scales::dollar) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = c(.8, .85),
+        axis.text.x = element_text(angle = 90, hjust = 0, vjust = .5)) +
+  labs(title = "El efecto global de la Pandemia",
+       subtitle = "PIB per cápita PPC, USD constantes del 2017",
+       caption = "Línea recta es PIB mediano global, bandas representan percentiles .25 y .75 respectivamente, en rojo el PIB de Chile\n@sientifiko1")
+
+# calculando los que más caen y mejor se recuperan
+bm %>% 
+  filter(año %in% c(2018, 2019, 2020, 2022)) %>% 
+  mutate(año = paste0("y", año)) %>% 
+  spread(año, pibpc) -> recuperacion
+
+recuperacion$cae <- (recuperacion$y2020 - recuperacion$y2019)/recuperacion$y2019
+recuperacion$sube <- (recuperacion$y2022-recuperacion$y2020)/recuperacion$y2020
+
+# los que más caen
+recuperacion %>% 
+  na.omit() %>% 
+  arrange(cae) %>% 
+  head(20) %>% 
+  ggplot() +
+  aes(reorder(name, -cae), cae, fill = name) +
+  guides(fill = "none") +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(subtitle = str_wrap("Top 20 países más afectados por la Pandemia", 25),
+       caption = "Tasa variación 2019-2020") +
+  # los que mejor se recuperan
+  recuperacion %>% 
+  na.omit() %>% 
+  arrange(desc(sube)) %>% 
+  head(20) %>% 
+  ggplot() +
+  aes(reorder(name, sube), sube, fill = name) +
+  guides(fill = "none") +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(subtitle = str_wrap("Top 20 países que mejor se recuperan post Pandemia", 25),
+       caption = "Tasa variación 2020-2022")
+
+
+recuperacion %>% 
+  filter(name == "Chile")
+
+nrow(recuperacion %>% filter(cae < -0.0741))
+nrow(recuperacion %>% filter(sube > 0.127))
+
+
+
+recuperacion %>% 
+  ggplot() +
+  aes(cae, sube) +
+  guides(color = "none") +
+  geom_point() +
+  geom_point(data = recuperacion %>% filter(name == "Chile"),
+              mapping = aes(color = (name == "Chile")), size = 3) +
+  geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text_repel(data = recuperacion %>% filter(name == "Chile"),
+                  mapping = aes(label = name),
+                  max.overlaps = 1000,
+                  nudge_y = .3) +
+  labs(x="Tasa caída 2019-2020",
+       y="Tasa recuperación 2020-2022",
+       title = "Derrumbe y recuperación mundial pandémica")
+
+# sacando la esperanza condicional
+set <- recuperacion %>% na.omit() 
+
+esperada1 <- feols(sube ~ log(y2019) + cae, data = set,
+                   panel.id = ~region)
+esperada2 <- feols(sube ~ log(y2019) + cae + region, 
+                   data = set,
+                  panel.id = ~region)
+
+etable(esperada1, esperada2, vcov = "cluster")
+
+# esto de acá es pa estudiar los residuales
+# esperada <- lm(sube ~ log(y2019) + cae, data = set)
+# resid_panel(esperada) vcovHC(esperada, "HC1")
+
+
+set$pred <- fitted(esperada2)
+set$worspred <- fitted(esperada1)
+# set$predlow <- predict(esperada1, vcov = vcovHC(esperada, "HC3"),
+#                        interval = "confidence")$ci_low  
+# set$predhigh <- predict(esperada1, vcov = vcovHC(esperada, "HC3"), 
+#                         interval = "confidence")$ci_high 
+set$predlow <- predict(esperada2, vcov = "cluster",
+                       interval = "confidence")$ci_low
+set$predhigh <- predict(esperada2, vcov = "cluster",
+                        interval = "confidence")$ci_high
+
+# Sacando el error cuadrado medio de cada modelo
+mean((set$sube - set$pred)**2)
+mean((set$sube - set$worspred)**2)
+
+# GRAFICANDO la esperanza condicional
+set %>% 
+  ggplot() +
+  aes(pred, sube, ymax = pred+predhigh, ymin = pred-predlow) +
+  guides(color = "none") +
+  geom_point() +
+  geom_point(data = set %>% filter(name == "Chile"),
+             mapping = aes(color = (name == "Chile")), size = 3) +
+  geom_ribbon(alpha = .3) +
+  # geom_vline(xintercept = 0) +
+  geom_hline(yintercept = 0) +
+  scale_x_continuous(labels = scales::percent,
+                     limits = c(-.069, .21),
+                     breaks = seq(-.069, .21, .02)) +
+  scale_y_continuous(labels = scales::percent,
+                     limits = c(-.179, 1),
+                     breaks = seq(-.179, 1, .1)) +
+  # scale_x_continuous(labels = scales::percent) +
+  # scale_y_continuous(labels = scales::percent) +
+  geom_text_repel(data = set %>% filter(name == "Chile"),
+                  mapping = aes(label = name),
+                  max.overlaps = 1000,
+                  nudge_y = .3) +
+  labs(x = "Crecimiento predicho",
+       y="Crecimiento observado",
+       title = "Potencial de recuperación post pandemia")
+
+
+# explorando que pasa en América del Sur
+set <- recuperacion %>% na.omit() 
+
+set %>% 
+  filter(region == "South America") %>% 
+  ggplot() +
+  aes(reorder(name, sube), sube) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(.01, 1, .05)) +
+  theme(axis.title.y = element_blank()) +
+  labs(y = "Tasa de recuperación 2020-2022",
+       title = "Recuperación en América del Sur")
+
+# set %>% 
+#   filter(region == "South America") %>% 
+#   ggplot() +
+#   aes(log(y2019), sube, color = (name == "Chile")) +
+#   guides(color = "none") +
+#   geom_point()
+
+# Re estimar recuperación sin guyana
+set2 <- set %>% filter(name != "Guyana")
+
+temp <- feols(sube ~ log(y2019) + cae + region, 
+                   data = set2,
+                   panel.id = ~region)
+
+set2$pred <- temp$fitted.values
+
+# obtener la media regional de recuperación sin Guyana
+set2 %>% 
+  filter(region == "South America") %>% 
+  pull(sube) %>% 
+  mean()
+
+# =========== OTRAS GRÁFICAS Y EXPLORACIONES =============
+
+# IMPORTACIÓN DE COBRE REFINADO
+impocobre <- readxl::read_excel("datos valor importaciones Cobre China de Chile.xlsx")
+
+bm %>% 
+  filter(name %in% c("Chile")) %>% 
+  group_by(name) %>% 
+  mutate(rate = log(pibpc/lag(pibpc))) %>% 
+  left_join(
+    impocobre %>% 
+      select(Period, tradevalue = `Trade Value (US$)`),
+    by = c("año" = "Period")
+  ) %>% 
+  # group_by(año) %>% 
+  mutate(ratem = log(tradevalue/lag(tradevalue)),
+         ratem2 = (tradevalue-lag(tradevalue))/lag(tradevalue)) -> temp
+
+temp %>% 
+  ggplot() +
+  aes(x = año) +
+  geom_line(aes(y = ratem2, color = "Impo"), linewidth = 1.2)
+
+
+# vinculo cobre refinado y crecimiento
+model <- feols(rate ~ ratem, data = temp)
+etable(model, vcov = vcovHAC)
+
+
+# quiebre estructural de las importaciones chinas
+chinam <- readxl::read_excel("importaciones.xls", skip = 2) %>% 
+  filter(`Country Code` == "CHN") %>% 
+  gather("anio","imports",5:ncol(.)) %>% 
+  mutate(anio = as.numeric(anio)) %>% 
+  filter(anio >= 1989)
+
+
+chinam$rate <- (chinam$imports - lag(chinam$imports))/lag(chinam$imports)
+chinam$rate2 <- log(chinam$imports/lag(chinam$imports))
+
+tsratechn <- ts(chinam$rate[2:34], start = 1990, end = 2022)
+tslogchn <- ts(log(chinam$imports), start = 1989, end = 2022)
+tsretchn <- ts(chinam$rate2[2:34], start = 1990, end = 2022)
+
+br <- cpt.mean(tsratechn*100, method = "BinSeg", penalty = "BIC", Q=4)
+br2 <- cpt.mean(tslogchn, method = "BinSeg", penalty = "BIC", Q=5)
+br3 <- cpt.mean(tsretchn*100, method = "BinSeg", penalty = "BIC", Q=4)
+
+br
+br2
+br3
+
+
+plot(br)
+plot(br2)
+plot(br3)
+
+1989+15
+
+
+# PRECIO DEL COBRE
+cooper <- readxl::read_excel("1.3_Price-of-refined-copper-Yearly.xlsx",
+                             sheet = 2)
+
+# pibcoop <- pibbcpc %>% 
+#   left_join(cooper)
+# pibcoop$precio
+# 
+# pibcoop %>% 
+#   filter(anio >= 1990) %>% 
+#   ggplot() +
+#   aes(x = anio) +
+#   geom_line(aes(y = pc/first(pc), color = "PIBpc")) +
+#   geom_line(aes(y = precio/first(precio), color = "P. cobre"))
+
+
+# Extensión horas de trabajo de Korea
+pwtdat <- readxl::read_excel("pwt1001.xlsx", sheet = 3)
+
+pwtdat %>% 
+  filter(country %in% c("Republic of Korea", "Singapore",
+                       "Japan", "China", "Taiwan")) %>% 
+  ggplot() +
+  aes(year, avh, color = country) +
+  geom_line(linewidth = 1.2)
+
+
+pwtdat %>% 
+  filter(country %in% c("Republic of Korea", "Singapore",
+                        "Japan", "China", "Taiwan")) %>% 
+  ggplot() +
+  aes(year, rgdpe/pop, color = country) +
+  geom_line(linewidth = 1.2)
+
+
+pwtdat %>% 
+  filter(year == 2019) %>% 
+  ggplot() +
+  aes(rgdpe/pop, avh, color = (country == "Republic of Korea")) + 
+  guides(color = "none") +
+  geom_jitter()
+
+
+# probando un modelo de estimación de eficiencia productiva
+setreg <- pwtdat %>% 
+  filter(year >= 1990,
+         !is.na(rgdpna/pop),
+         !is.na(avh),
+         !is.na(hc),
+         !is.na(rdana),
+         !is.na(rnna),
+         !is.na(labsh)) %>% 
+  select(countrycode, year, rgdpna, pop,
+         avh, hc, rdana, rnna, labsh)
+
+
+sf_model <- sfa(log(rgdpna/pop) ~ log(avh) + log(hc) + log(rdana/pop) +
+                  log(rnna/pop) + log(labsh) | countrycode + year, 
+                data = setreg)
+
+
+summary(sf_model)
+
+setreg$eff <- efficiencies(sf_model)
